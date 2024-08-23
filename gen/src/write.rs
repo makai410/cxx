@@ -3,7 +3,7 @@ use crate::gen::nested::NamespaceEntries;
 use crate::gen::out::OutFile;
 use crate::gen::{builtin, include, Opt};
 use crate::syntax::atom::Atom::{self, *};
-use crate::syntax::instantiate::{ImplKey, NamedImplKey};
+use crate::syntax::instantiate::{CxxVectorPayloadImplKey, ImplKey, NamedImplKey, PtrConstness};
 use crate::syntax::map::UnorderedMap as Map;
 use crate::syntax::set::UnorderedSet;
 use crate::syntax::symbol::{self, Symbol};
@@ -1352,6 +1352,7 @@ fn write_space_after_type(out: &mut OutFile, ty: &Type) {
 enum UniquePtr<'a> {
     Ident(&'a Ident),
     CxxVector(&'a Ident),
+    CxxVectorPtr(&'a Ident, PtrConstness),
 }
 
 trait ToTypename {
@@ -1370,6 +1371,17 @@ impl<'a> ToTypename for UniquePtr<'a> {
             UniquePtr::Ident(ident) => ident.to_typename(types),
             UniquePtr::CxxVector(element) => {
                 format!("::std::vector<{}>", element.to_typename(types))
+            }
+            UniquePtr::CxxVectorPtr(element, constness) => {
+                let const_prefix = match constness {
+                    PtrConstness::Const => "const ",
+                    PtrConstness::Mut => "",
+                };
+                format!(
+                    "::std::vector<{}{}*>",
+                    const_prefix,
+                    element.to_typename(types)
+                )
             }
         }
     }
@@ -1392,6 +1404,15 @@ impl<'a> ToMangled for UniquePtr<'a> {
             UniquePtr::CxxVector(element) => {
                 symbol::join(&[&"std", &"vector", &element.to_mangled(types)])
             }
+            UniquePtr::CxxVectorPtr(element, constness) => {
+                let prefix = match constness {
+                    PtrConstness::Const => "ptrc",
+                    PtrConstness::Mut => "ptrm",
+                };
+                element
+                    .to_mangled(types)
+                    .prefix_with(&format!("std$vector${}$", prefix))
+            }
         }
     }
 }
@@ -1412,7 +1433,7 @@ fn write_generic_instantiations(out: &mut OutFile) {
             ImplKey::UniquePtr(ident) => write_unique_ptr(out, ident),
             ImplKey::SharedPtr(ident) => write_shared_ptr(out, ident),
             ImplKey::WeakPtr(ident) => write_weak_ptr(out, ident),
-            ImplKey::CxxVector(ident) => write_cxx_vector(out, ident),
+            ImplKey::CxxVector(payload) => write_cxx_vector(out, payload),
         }
     }
     out.end_block(Block::ExternC);
@@ -1639,21 +1660,21 @@ fn write_unique_ptr_common(out: &mut OutFile, ty: UniquePtr) {
         // bindings for a "new" method anyway. But the Rust code can't be called
         // for Opaque types because the 'new' method is not implemented.
         UniquePtr::Ident(ident) => out.types.is_maybe_trivial(ident),
-        UniquePtr::CxxVector(_) => false,
+        UniquePtr::CxxVector(_) | UniquePtr::CxxVectorPtr(..) => false,
     };
 
     let conditional_delete = match ty {
         UniquePtr::Ident(ident) => {
             !out.types.structs.contains_key(ident) && !out.types.enums.contains_key(ident)
         }
-        UniquePtr::CxxVector(_) => false,
+        UniquePtr::CxxVector(_) | UniquePtr::CxxVectorPtr(..) => false,
     };
 
     if conditional_delete {
         out.builtin.is_complete = true;
         let definition = match ty {
             UniquePtr::Ident(ty) => &out.types.resolve(ty).name.cxx,
-            UniquePtr::CxxVector(_) => unreachable!(),
+            UniquePtr::CxxVector(_) | UniquePtr::CxxVectorPtr(..) => unreachable!(),
         };
         writeln!(
             out,
@@ -1895,7 +1916,17 @@ fn write_weak_ptr(out: &mut OutFile, key: NamedImplKey) {
     writeln!(out, "}}");
 }
 
-fn write_cxx_vector(out: &mut OutFile, key: NamedImplKey) {
+fn write_cxx_vector(out: &mut OutFile, payload: CxxVectorPayloadImplKey) {
+    let (key, ptr_prefix, unique_ptr_payload) = match payload {
+        CxxVectorPayloadImplKey::Named(id) => (id, "", UniquePtr::CxxVector(id.rust)),
+        CxxVectorPayloadImplKey::Ptr(id, constness) => {
+            let prefix = match constness {
+                PtrConstness::Const => "ptrc$",
+                PtrConstness::Mut => "ptrm$",
+            };
+            (id, prefix, UniquePtr::CxxVectorPtr(id.rust, constness))
+        }
+    };
     let element = key.rust;
     let inner = element.to_typename(out.types);
     let instance = element.to_mangled(out.types);
@@ -1916,8 +1947,8 @@ fn write_cxx_vector(out: &mut OutFile, key: NamedImplKey) {
     begin_function_definition(out);
     writeln!(
         out,
-        "::std::size_t cxxbridge1$std$vector${}$size(::std::vector<{}> const &s) noexcept {{",
-        instance, inner,
+        "::std::size_t cxxbridge1$std$vector${}{}$size(const ::std::vector<{}> &s) noexcept {{",
+        ptr_prefix, instance, inner,
     );
     writeln!(out, "  return s.size();");
     writeln!(out, "}}");
@@ -1925,8 +1956,8 @@ fn write_cxx_vector(out: &mut OutFile, key: NamedImplKey) {
     begin_function_definition(out);
     writeln!(
         out,
-        "{} *cxxbridge1$std$vector${}$get_unchecked(::std::vector<{}> *s, ::std::size_t pos) noexcept {{",
-        inner, instance, inner,
+        "{} *cxxbridge1$std$vector${}{}$get_unchecked(::std::vector<{}> *s, ::std::size_t pos) noexcept {{",
+        inner, ptr_prefix, instance, inner,
     );
     writeln!(out, "  return &(*s)[pos];");
     writeln!(out, "}}");
@@ -1954,5 +1985,5 @@ fn write_cxx_vector(out: &mut OutFile, key: NamedImplKey) {
     }
 
     out.include.memory = true;
-    write_unique_ptr_common(out, UniquePtr::CxxVector(element));
+    write_unique_ptr_common(out, unique_ptr_payload);
 }

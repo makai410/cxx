@@ -2,7 +2,7 @@ use crate::syntax::atom::Atom::*;
 use crate::syntax::attrs::{self, OtherAttrs};
 use crate::syntax::cfg::CfgExpr;
 use crate::syntax::file::Module;
-use crate::syntax::instantiate::{ImplKey, NamedImplKey};
+use crate::syntax::instantiate::{CxxVectorPayloadImplKey, ImplKey, NamedImplKey, PtrConstness};
 use crate::syntax::qualified::QualifiedName;
 use crate::syntax::report::Errors;
 use crate::syntax::symbol::Symbol;
@@ -108,8 +108,8 @@ fn expand(ffi: Module, doc: Doc, attrs: OtherAttrs, apis: &[Api], types: &Types)
             ImplKey::WeakPtr(ident) => {
                 expanded.extend(expand_weak_ptr(ident, types, explicit_impl));
             }
-            ImplKey::CxxVector(ident) => {
-                expanded.extend(expand_cxx_vector(ident, explicit_impl, types));
+            ImplKey::CxxVector(payload) => {
+                expanded.extend(expand_cxx_vector(payload, explicit_impl, types));
             }
         }
     }
@@ -1670,14 +1670,24 @@ fn expand_weak_ptr(key: NamedImplKey, types: &Types, explicit_impl: Option<&Impl
 }
 
 fn expand_cxx_vector(
-    key: NamedImplKey,
+    payload: CxxVectorPayloadImplKey,
     explicit_impl: Option<&Impl>,
     types: &Types,
 ) -> TokenStream {
+    let (ptr_prefix, key, ty_prefix) = match payload {
+        CxxVectorPayloadImplKey::Named(id) => ("", id, quote! {}),
+        CxxVectorPayloadImplKey::Ptr(id, PtrConstness::Const) => ("$ptrc", id, quote! { *const }),
+        CxxVectorPayloadImplKey::Ptr(id, PtrConstness::Mut) => ("$ptrm", id, quote! { *mut }),
+    };
     let elem = key.rust;
+
     let name = elem.to_string();
     let resolve = types.resolve(elem);
-    let prefix = format!("cxxbridge1$std$vector${}$", resolve.name.to_symbol());
+    let prefix = format!(
+        "cxxbridge1$std$vector${}{}$",
+        ptr_prefix,
+        resolve.name.to_symbol()
+    );
     let link_new = format!("{}new", prefix);
     let link_size = format!("{}size", prefix);
     let link_get_unchecked = format!("{}get_unchecked", prefix);
@@ -1694,6 +1704,7 @@ fn expand_cxx_vector(
     let link_unique_ptr_drop = format!("{}drop", unique_ptr_prefix);
 
     let (impl_generics, ty_generics) = generics::split_for_impl(key, explicit_impl, resolve);
+    let impl_target = quote! { #ty_prefix #elem #ty_generics };
 
     let begin_span = explicit_impl.map_or(key.begin_span, |explicit| explicit.impl_token.span);
     let end_span = explicit_impl.map_or(key.end_span, |explicit| explicit.brace_token.span.join());
@@ -1744,7 +1755,8 @@ fn expand_cxx_vector(
     };
 
     quote_spanned! {end_span=>
-        #unsafe_token impl #impl_generics ::cxx::private::VectorElement for #elem #ty_generics {
+        #unsafe_token impl #impl_generics ::cxx::private::VectorElement for #impl_target {
+            #[doc(hidden)]
             fn __typename(f: &mut ::cxx::core::fmt::Formatter<'_>) -> ::cxx::core::fmt::Result {
                 f.write_str(#name)
             }
@@ -1758,7 +1770,7 @@ fn expand_cxx_vector(
             fn __vector_size(v: &::cxx::CxxVector<Self>) -> usize {
                 extern "C" {
                     #[link_name = #link_size]
-                    fn __vector_size #impl_generics(_: &::cxx::CxxVector<#elem #ty_generics>) -> usize;
+                    fn __vector_size #impl_generics(_: &::cxx::CxxVector<#impl_target>) -> usize;
                 }
                 unsafe { __vector_size(v) }
             }
@@ -1766,7 +1778,7 @@ fn expand_cxx_vector(
                 extern "C" {
                     #[link_name = #link_get_unchecked]
                     fn __get_unchecked #impl_generics(
-                        v: *mut ::cxx::CxxVector<#elem #ty_generics>,
+                        v: *mut ::cxx::CxxVector<#impl_target>,
                         pos: usize,
                     ) -> *mut ::cxx::core::ffi::c_void;
                 }
@@ -1787,7 +1799,7 @@ fn expand_cxx_vector(
             unsafe fn __unique_ptr_raw(raw: *mut ::cxx::CxxVector<Self>) -> ::cxx::core::mem::MaybeUninit<*mut ::cxx::core::ffi::c_void> {
                 extern "C" {
                     #[link_name = #link_unique_ptr_raw]
-                    fn __unique_ptr_raw #impl_generics(this: *mut ::cxx::core::mem::MaybeUninit<*mut ::cxx::core::ffi::c_void>, raw: *mut ::cxx::CxxVector<#elem #ty_generics>);
+                    fn __unique_ptr_raw #impl_generics(this: *mut ::cxx::core::mem::MaybeUninit<*mut ::cxx::core::ffi::c_void>, raw: *mut ::cxx::CxxVector<#impl_target>);
                 }
                 let mut repr = ::cxx::core::mem::MaybeUninit::uninit();
                 unsafe {
@@ -1798,14 +1810,14 @@ fn expand_cxx_vector(
             unsafe fn __unique_ptr_get(repr: ::cxx::core::mem::MaybeUninit<*mut ::cxx::core::ffi::c_void>) -> *const ::cxx::CxxVector<Self> {
                 extern "C" {
                     #[link_name = #link_unique_ptr_get]
-                    fn __unique_ptr_get #impl_generics(this: *const ::cxx::core::mem::MaybeUninit<*mut ::cxx::core::ffi::c_void>) -> *const ::cxx::CxxVector<#elem #ty_generics>;
+                    fn __unique_ptr_get #impl_generics(this: *const ::cxx::core::mem::MaybeUninit<*mut ::cxx::core::ffi::c_void>) -> *const ::cxx::CxxVector<#impl_target>;
                 }
                 unsafe { __unique_ptr_get(&repr) }
             }
             unsafe fn __unique_ptr_release(mut repr: ::cxx::core::mem::MaybeUninit<*mut ::cxx::core::ffi::c_void>) -> *mut ::cxx::CxxVector<Self> {
                 extern "C" {
                     #[link_name = #link_unique_ptr_release]
-                    fn __unique_ptr_release #impl_generics(this: *mut ::cxx::core::mem::MaybeUninit<*mut ::cxx::core::ffi::c_void>) -> *mut ::cxx::CxxVector<#elem #ty_generics>;
+                    fn __unique_ptr_release #impl_generics(this: *mut ::cxx::core::mem::MaybeUninit<*mut ::cxx::core::ffi::c_void>) -> *mut ::cxx::CxxVector<#impl_target>;
                 }
                 unsafe { __unique_ptr_release(&mut repr) }
             }
