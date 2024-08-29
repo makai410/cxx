@@ -1938,8 +1938,8 @@ fn write_cxx_vector(out: &mut OutFile, payload: CxxVectorPayloadImplKey) {
     begin_function_definition(out);
     writeln!(
         out,
-        "::std::vector<{}> *cxxbridge1$std$vector${}$new() noexcept {{",
-        inner, instance,
+        "::std::vector<{}> *cxxbridge1$std$vector${}{}$new() noexcept {{",
+        inner, ptr_prefix, instance,
     );
     writeln!(out, "  return new ::std::vector<{}>();", inner);
     writeln!(out, "}}");

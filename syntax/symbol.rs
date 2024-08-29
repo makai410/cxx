@@ -38,6 +38,13 @@ impl Symbol {
         assert!(!symbol.0.is_empty());
         symbol
     }
+
+    /// This function got removed as dead codes in the commite `7fae555`
+    /// For example, for taking a symbol and then making a new symbol
+    /// for a vec of that symbol.
+    pub fn prefix_with(&self, prefix: &str) -> Symbol {
+        Symbol(format!("{}{}", prefix, self.to_string()))
+    }
 }
 
 pub(crate) trait Segment {
