@@ -395,3 +395,14 @@ fn test_unwind_safe() {
     fn require_ref_unwind_safe<T: RefUnwindSafe>() {}
     require_ref_unwind_safe::<ffi::C>();
 }
+
+#[test]
+fn test_write_cxxstring_with_conflict() {
+    use cxx::let_cxx_string;
+    use std::fmt::Write as _;
+    use std::io::Write as _;
+    let_cxx_string!(string1 = "");
+    let_cxx_string!(string2 = "Rust love C++");
+    write!(string1, "Rust love C++").unwrap();
+    assert_eq!(string1, string2);
+}

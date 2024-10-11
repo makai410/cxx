@@ -205,6 +205,11 @@ impl CxxString {
     pub fn push_bytes(self: Pin<&mut Self>, bytes: &[u8]) {
         unsafe { string_push(self, bytes.as_ptr(), bytes.len()) }
     }
+
+    /// Solving the conflict in situations where `std::fmt::Write` and `std::io::Write` are in scope.
+    pub fn write_fmt(self: &mut Pin<&mut Self>, args: fmt::Arguments<'_>) -> fmt::Result {
+        <Pin<&mut Self> as std::fmt::Write>::write_fmt(self, args) // TODO!
+    }
 }
 
 impl Display for CxxString {
